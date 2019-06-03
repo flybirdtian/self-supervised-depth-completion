@@ -21,7 +21,7 @@ from dataloaders.kitti_loader import KittiDataset, OurDataset, NuScenesDataset, 
 parser = argparse.ArgumentParser(description='Sparse-to-Dense')
 parser.add_argument('-w', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=11, type=int, metavar='N',
+parser.add_argument('--epochs', default=20, type=int, metavar='N',
                     help='number of total epochs to run (default: 11)')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')

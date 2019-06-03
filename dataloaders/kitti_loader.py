@@ -605,10 +605,11 @@ class VKittiDataset(data.Dataset):
 
         return rgb, lidar, depth
 
-    def crop_data(self, data):
-        w = data.shape[1]
-        lp = (w - self.crop_w) // 2
-        return data[-self.crop_h:, lp:lp + self.crop_w, :]
+    def set_top_zero(self, data):
+        # only keep values in 256 pixels from bottom
+        data[0:-256, :, :] = 0
+
+        return data
 
     def deal_data(self, rgb, lidar, depth):
         depth = np.expand_dims(depth, axis=2)
@@ -622,10 +623,8 @@ class VKittiDataset(data.Dataset):
 
         # padding to size(input_h, input_w) at the bottom and right of the image
         if self.crop:
-            rgb = self.crop_data(rgb)
-            lidar = self.crop_data(lidar)
-            depth = self.crop_data(depth)
-            gray = self.crop_data(gray)
+            lidar = self.set_top_zero(lidar)
+            depth = self.set_top_zero(depth)
 
         return rgb.astype(np.float32), lidar.astype(np.float32), depth.astype(np.float32), gray.astype(np.float32)
 
