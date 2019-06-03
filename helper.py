@@ -15,6 +15,9 @@ fieldnames = ['epoch','rmse', 'photo', 'mae', 'irmse', 'imae',
 class logger:
     def __init__(self, args, prepare = True):
         self.args = args
+
+        self.args.save_pred = True
+
         output_directory = get_folder_name(args)
         self.output_directory = output_directory
         self.best_result = Result()
@@ -33,7 +36,9 @@ class logger:
             print("=> creating source code backup ...")
             backup_directory = os.path.join(output_directory, "code_backup")
             self.backup_directory = backup_directory
-            backup_source_code(backup_directory)
+            print("=> stop source code backup ...")
+            # backup_source_code(backup_directory)
+
             # create new csv files with only header
             with open(self.train_csv, 'w') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -158,7 +163,7 @@ class logger:
             self.save_best_txt(result, epoch)
         return is_best
 
-    def conditional_save_pred(self, mode, i, pred, epoch):
+    def conditional_save_pred(self, mode, file_name, pred, epoch):
         if ("test" in mode or mode == "eval") and self.args.save_pred:
 
             # save images for visualization/ testing
@@ -166,8 +171,8 @@ class logger:
             if not os.path.exists(image_folder):
                 os.makedirs(image_folder)
             img = torch.squeeze(pred.data.cpu()).numpy()
-            filename = os.path.join(image_folder, '{0:010d}.png'.format(i))
-            vis_utils.save_depth_as_uint16png(img, filename)
+            file_path = os.path.join(image_folder, file_name)
+            vis_utils.save_depth_as_uint16png(img, file_path)
 
     def conditional_summarize(self, mode, avg, is_best):
         print("\n*\nSummary of ", mode, "round")

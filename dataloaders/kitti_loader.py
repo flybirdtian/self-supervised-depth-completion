@@ -158,7 +158,7 @@ def train_transform(rgb, sparse, target, rgb_near, args):
         ])
         rgb = transform_rgb(rgb)
         if rgb_near is not None:
-            rgb_near = transform_rgb(rgb_near);
+            rgb_near = transform_rgb(rgb_near)
     # sparse = drop_depth_measurements(sparse, 0.9)
 
     return rgb, sparse, target, rgb_near
@@ -174,7 +174,7 @@ def val_transform(rgb, sparse, target, rgb_near, args):
     if target is not None:
         target = transform(target)
     if rgb_near is not None:
-        rgb_near = transform(rgb_near);
+        rgb_near = transform(rgb_near)
     return rgb, sparse, target, rgb_near
 
 def no_transform(rgb, sparse, target, rgb_near, args):
@@ -272,4 +272,565 @@ class KittiDepth(data.Dataset):
 
     def __len__(self):
         return len(self.paths['gt'])
+
+
+def get_dataset_path(base_dir, setname='train'):
+    """
+    get dataset path according to setname
+    :param base_dir: basic data dir
+    :param setname: train, val, seval, test
+    :return: lidar_dir, depth_dir, rgb_dir
+    """
+
+    import os
+    if setname == 'train':
+        lidar_dir = os.path.join(base_dir, 'data_depth_velodyne', 'train')
+        depth_dir = os.path.join(base_dir, 'data_depth_annotated', 'train')
+        rgb_dir = os.path.join(base_dir, 'raw')
+    elif setname == 'val':
+        lidar_dir = os.path.join(base_dir, 'data_depth_velodyne', 'val')
+        depth_dir = os.path.join(base_dir, 'data_depth_annotated', 'val')
+        rgb_dir = os.path.join(base_dir, 'raw')
+    elif setname == 'selval':
+        lidar_dir = os.path.join(base_dir, 'val_selection_cropped', 'velodyne_raw')
+        depth_dir = os.path.join(base_dir, 'val_selection_cropped', 'groundtruth_depth')
+        rgb_dir = os.path.join(base_dir, 'val_selection_cropped', 'image')
+    elif setname == 'test':
+        lidar_dir = os.path.join(base_dir, 'test_depth_completion_anonymous', 'velodyne_raw')
+        depth_dir = os.path.join(base_dir, 'test_depth_completion_anonymous', 'velodyne_raw')
+        rgb_dir = os.path.join(base_dir, 'test_depth_completion_anonymous', 'image')
+    else:
+        raise ValueError("Unrecognized setname "+str(setname))
+
+    return lidar_dir, depth_dir, rgb_dir
+
+
+def get_transform(mode):
+    if mode == 'train':
+        transform = train_transform
+    elif mode == 'eval':
+        transform = val_transform
+    else:
+        raise ValueError("Unrecognized mode "+str(mode))
+
+    return transform
+
+
+class KittiDataset(data.Dataset):
+    """
+    origin format as original
+    """
+    def __init__(self, base_dir, mode, setname, args):
+        """
+        :param base_dir:
+        :param setname:
+        :param transform:
+        :param return_idx:
+        :param crop:
+        """
+        self.dataset_name = 'kitti'
+
+        self.mode = mode
+        self.setname = setname
+        self.args = args
+
+        self.base_dir = base_dir
+        lidar_dir, depth_dir, rgb_dir = self.get_paths(base_dir)
+        self.lidar_dir = lidar_dir
+        self.depth_dir = depth_dir
+        self.rgb_dir = rgb_dir
+
+        self.transform = get_transform(mode)
+
+        self.crop_h = 352
+        self.crop_w = 1216
+
+        # sparsity
+        self.use_sparsity = False
+        self.sparsity_ratio = 0.2
+
+        self.crop = True
+
+        self.lidars = list(sorted(glob.iglob(self.lidar_dir + "/**/*.png", recursive=True)))
+
+    def __len__(self):
+        return len(self.lidars)
+
+    def __getitem__(self, index):
+        """
+        :param index:
+        :return:
+        """
+        return self.getitem(index)
+
+    def get_file_name(self, item):
+        lidar_path = self.lidars[item]
+        file_names = lidar_path.split('/')
+        return file_names[-1]
+
+    def get_paths(self, base_dir):
+        return get_dataset_path(base_dir, setname=self.setname)
+
+    def split_selval_filename(self, filename):
+        mid = 'velodyne_raw_'
+        name_split = filename.split(mid)
+        pre, pos = name_split[0], name_split[1]
+        return pre, mid, pos
+
+    def get_depth_path(self, lidar_path):
+        depth_path = None
+        if self.setname == 'train' or self.setname == 'val':
+            file_names = lidar_path.split('/')
+            depth_path = os.path.join(self.depth_dir, *file_names[-5:-3], 'groundtruth', *file_names[-2:])
+        elif self.setname == 'test':
+            file_names = lidar_path.split('/')
+            depth_path = os.path.join(self.depth_dir, file_names[-1])
+        elif self.setname == 'selval':
+            file_names = lidar_path.split('/')
+            file_name = file_names[-1]
+            pre, mid, pos = self.split_selval_filename(file_name)
+            depth_file_name = pre + "groundtruth_depth_" + pos
+            depth_path = os.path.join(self.depth_dir, depth_file_name)
+        return depth_path
+
+    def get_rgb_path(self, lidar_path):
+        rgb_path = None
+        if self.setname == 'train' or self.setname == 'val':
+            file_names = lidar_path.split('/')
+            rgb_path = os.path.join(self.rgb_dir, file_names[-5].split('_drive')[0], file_names[-5],
+                                    file_names[-2], 'data', file_names[-1])
+        elif self.setname == 'test':
+            file_names = lidar_path.split('/')
+            rgb_path = os.path.join(self.rgb_dir, file_names[-1])
+        elif self.setname == 'selval':
+            file_names = lidar_path.split('/')
+            file_name = file_names[-1]
+            pre, mid, pos = self.split_selval_filename(file_name)
+            rgb_file_name = pre + "image_" + pos
+            rgb_path = os.path.join(self.rgb_dir, rgb_file_name)
+        return rgb_path
+
+    def get_raw_data(self, lidar_path):
+        depth_path = self.get_depth_path(lidar_path)
+        rgb_path = self.get_rgb_path(lidar_path)
+        assert(rgb_path != '')
+
+        depth = self.read_depth(depth_path)
+        lidar = self.read_depth(lidar_path)
+        rgb = self.read_rgb(rgb_path)
+
+        if self.use_sparsity:
+            rand_value = np.random.rand(*lidar.shape)
+            rand_mask = rand_value <= self.sparsity_ratio
+            lidar = lidar * rand_mask
+
+        return rgb, lidar, depth
+
+    def crop_data(self, data):
+        w = data.shape[1]
+        lp = (w - self.crop_w) // 2
+        return data[-self.crop_h:, lp:lp + self.crop_w, :]
+
+    def deal_data(self, rgb, lidar, depth):
+        depth = np.expand_dims(depth, axis=2)
+        lidar = np.expand_dims(lidar, axis=2)
+
+        if self.transform:
+            rgb, lidar, depth, rgb_ = self.transform(rgb, lidar, depth, rgb, self.args)
+
+        gray = np.array(Image.fromarray(rgb).convert('L'))
+        gray = np.expand_dims(gray, -1)
+
+        if self.crop:
+            rgb = self.crop_data(rgb)
+            lidar = self.crop_data(lidar)
+            depth = self.crop_data(depth)
+            gray = self.crop_data(gray)
+
+        return rgb.astype(np.float32), lidar.astype(np.float32), depth.astype(np.float32), gray.astype(np.float32)
+
+    def get_ori_item(self, index):
+        lidar_path = self.lidars[index]
+        rgb, lidar, depth = self.get_raw_data(lidar_path)
+
+        out = (rgb, lidar, depth)
+
+        return out
+
+    def get_ori_shape(self, index):
+        lidar_path = self.lidars[index]
+        return self._get_ori_shape(lidar_path)
+
+    def _get_ori_shape(self, lidar_path):
+        import magic
+        import re
+
+        info = magic.from_file(lidar_path)
+        size_info = re.search('(\d+) x (\d+)', info).groups()
+        width = int(size_info[0])
+        height = int(size_info[1])
+        return height, width
+
+    def getitem(self, index):
+        lidar_path = self.lidars[index]
+        rgb, lidar, depth = self.get_raw_data(lidar_path)
+
+        # verify shape size
+        ori_shape = lidar.shape
+        assert ori_shape == depth.shape == rgb.shape[0:2] == self.get_ori_shape(index)
+
+        rgb, lidar, depth, gray = self.deal_data(rgb, lidar, depth)
+
+        index_3d = np.zeros((1, 1, 1))
+        index_3d[0, 0, 0] = index
+
+        candidates = {"rgb":rgb, "d":lidar, "gt":depth, "g":gray, "index":index_3d, "r_mat":None, "t_vec":None, "rgb_near":None}
+        items = {key:to_float_tensor(val) for key, val in candidates.items() if val is not None}
+
+        return items
+
+    def read_rgb(self, path):
+        img = np.array(Image.open(path).convert('RGB'), dtype=np.uint8)
+        return img
+
+    def read_depth(self, path):
+        depth_png = np.array(Image.open(path), dtype=np.uint16)
+        # make sure we have a proper 16bit depth map here.. not 8bit!
+        assert (np.max(depth_png) > 255)
+        depth_image = (depth_png / 256.).astype(np.float32)
+        # depth_image = self.mask_depth_image(depth_image, self.depth_start, self.depth_end)
+        return depth_image
+
+
+class VKittiDataset(data.Dataset):
+    """
+    origin format as original
+    """
+    def __init__(self, base_dir, mode, args, setname='train', subset='clone'):
+        """
+        :param base_dir:
+        :param setname:
+        :param transform:
+        :param return_seg:
+        :param return_idx:
+        :param use_stereo:
+        :param crop:
+        :param compose_depth:
+        :param split_depth: True or False, if True, split depth into multiple channels according to depth
+        :param split_mode: single_offset or multiple_offset, output single channel offset or multiple channel offset
+        """
+        self.mode = mode
+        self.setname = setname
+        self.subset = subset
+        self.args = args
+
+        self.base_dir = base_dir
+        lidar_dir, depth_dir, rgb_dir = self.get_paths(base_dir)
+        self.lidar_dir = lidar_dir
+        self.depth_dir = depth_dir
+        self.rgb_dir = rgb_dir
+
+        self.transform = get_transform(mode)
+
+        self.crop_h = 352
+        self.crop_w = 1216
+
+        # sparsity
+        self.use_sparsity = False
+        self.sparsity_ratio = 0.2
+
+        self.crop = True
+
+        self.lidars = list(sorted(glob.iglob(self.lidar_dir + "/**/" + subset + "/*.png", recursive=True)))
+
+    def __len__(self):
+        return len(self.lidars)
+
+    def __getitem__(self, index):
+        """
+        :param index:
+        :return:
+        """
+        return self.getitem(index)
+
+    def get_file_name(self, item):
+        lidar_path = self.lidars[item]
+        file_names = lidar_path.split('/')
+        return file_names[-1]
+
+    def get_paths(self, base_dir):
+        """
+        get dataset path according to setname
+        :param base_dir: basic data dir
+        :param setname: train, val, seval, test
+        :param use_compose_depth: use left-right composed depth as ground-truth or not
+        :return: lidar_dir, depth_dir, rgb_dir
+        """
+        if self.setname == 'train':
+            lidar_dir = os.path.join(base_dir, 'train', 'sparse_lidar')
+            depth_dir = os.path.join(base_dir, 'train', 'ka_depth')
+            rgb_dir = os.path.join(base_dir, 'train', 'rgb')
+        elif self.setname == 'test':
+            lidar_dir = os.path.join(base_dir, 'test', 'sparse_lidar')
+            depth_dir = os.path.join(base_dir, 'test', 'ka_depth')
+            rgb_dir = os.path.join(base_dir, 'test', 'rgb')
+        else:
+            raise Exception("setname {} does not exist!".format(self.setname))
+
+        return lidar_dir, depth_dir, rgb_dir
+
+    def get_rgb_path(self, lidar_path):
+        file_names = lidar_path.split('/')
+        rgb_path = os.path.join(self.rgb_dir, *file_names[-3:])
+        return rgb_path
+
+    def get_depth_path(self, lidar_path):
+        file_names = lidar_path.split('/')
+        depth_path = os.path.join(self.depth_dir, *file_names[-3:])
+        return depth_path
+
+    def get_raw_data(self, lidar_path):
+        depth_path = self.get_depth_path(lidar_path)
+        rgb_path = self.get_rgb_path(lidar_path)
+        assert(rgb_path != '')
+
+        depth = self.read_depth(depth_path)
+        lidar = self.read_depth(lidar_path)
+        rgb = self.read_rgb(rgb_path)
+
+        if self.use_sparsity:
+            rand_value = np.random.rand(*lidar.shape)
+            rand_mask = rand_value <= self.sparsity_ratio
+            lidar = lidar * rand_mask
+
+        return rgb, lidar, depth
+
+    def crop_data(self, data):
+        w = data.shape[1]
+        lp = (w - self.crop_w) // 2
+        return data[-self.crop_h:, lp:lp + self.crop_w, :]
+
+    def deal_data(self, rgb, lidar, depth):
+        depth = np.expand_dims(depth, axis=2)
+        lidar = np.expand_dims(lidar, axis=2)
+
+        if self.transform:
+            rgb, lidar, depth, rgb_ = self.transform(rgb, lidar, depth, rgb, self.args)
+
+        gray = np.array(Image.fromarray(rgb).convert('L'))
+        gray = np.expand_dims(gray, -1)
+
+        # padding to size(input_h, input_w) at the bottom and right of the image
+        if self.crop:
+            rgb = self.crop_data(rgb)
+            lidar = self.crop_data(lidar)
+            depth = self.crop_data(depth)
+            gray = self.crop_data(gray)
+
+        return rgb.astype(np.float32), lidar.astype(np.float32), depth.astype(np.float32), gray.astype(np.float32)
+
+    def get_ori_item(self, index):
+        lidar_path = self.lidars[index]
+        rgb, lidar, depth = self.get_raw_data(lidar_path)
+
+        out = (rgb, lidar, depth)
+
+        return out
+
+    def get_ori_shape(self, index):
+        lidar_path = self.lidars[index]
+        return self._get_ori_shape(lidar_path)
+
+    def _get_ori_shape(self, lidar_path):
+        import magic
+        import re
+
+        info = magic.from_file(lidar_path)
+        size_info = re.search('(\d+) x (\d+)', info).groups()
+        width = int(size_info[0])
+        height = int(size_info[1])
+        return height, width
+
+    def getitem(self, index):
+        lidar_path = self.lidars[index]
+        rgb, lidar, depth = self.get_raw_data(lidar_path)
+
+        # verify shape size
+        ori_shape = lidar.shape
+        assert ori_shape == depth.shape == rgb.shape[0:2] == self.get_ori_shape(index)
+
+        rgb, lidar, depth, gray = self.deal_data(rgb, lidar, depth)
+
+        index_3d = np.zeros((1, 1, 1))
+        index_3d[0, 0, 0] = index
+
+        candidates = {"rgb":rgb, "d":lidar, "gt":depth, "g":gray, "index":index_3d, "r_mat":None, "t_vec":None, "rgb_near":None}
+        items = {key:to_float_tensor(val) for key, val in candidates.items() if val is not None}
+
+        return items
+
+    def read_rgb(self, path):
+        img = np.array(Image.open(path).convert('RGB'), dtype=np.uint8)
+        return img
+
+    def read_depth(self, path):
+        depth_png = np.array(Image.open(path), dtype=np.uint16)
+        # make sure we have a proper 16bit depth map here.. not 8bit!
+        assert (np.max(depth_png) > 100)
+        depth_image = (depth_png / 100.).astype(np.float32)
+        # depth_image = self.mask_depth_image(depth_image, self.depth_start, self.depth_end)
+        return depth_image
+
+
+class OurDataset(data.Dataset):
+    """
+    origin format as original
+    """
+    def __init__(self, base_dir, mode, setname, args):
+        """
+        :param base_dir:
+        :param setname:
+        """
+        self.base_dir = base_dir
+        self.mode = mode
+        self.setname = setname
+        self.args = args
+
+        lidar_dir, depth_dir, rgb_dir = self.get_paths(base_dir)
+        self.lidar_dir = lidar_dir
+        self.depth_dir = depth_dir
+        self.rgb_dir = rgb_dir
+
+        self.transform = get_transform(mode)
+
+        self.crop_h = 352
+        self.crop_w = 1216
+
+        self.crop = True
+
+        self.lidars = list(sorted(glob.iglob(self.lidar_dir + "/**/*.png", recursive=True)))
+
+    def get_file_name(self, item):
+        lidar_path = self.lidars[item]
+        file_names = lidar_path.split('/')
+        return file_names[-1]
+
+    def __len__(self):
+        return len(self.lidars)
+
+    def __getitem__(self, index):
+        """
+        :param index:
+        :return:
+        """
+        return self.getitem(index)
+
+    def get_paths(self, base_dir):
+        lidar_dir = os.path.join(base_dir, 'lidar')
+        depth_dir = os.path.join(base_dir, 'depth')
+        rgb_dir = os.path.join(base_dir, 'image')
+
+        return lidar_dir, depth_dir, rgb_dir
+
+    def get_depth_path(self, lidar_path):
+        file_names = lidar_path.split('/')
+        depth_path = os.path.join(self.depth_dir, file_names[-1])
+        return depth_path
+
+    def get_rgb_path(self, lidar_path):
+        file_names = lidar_path.split('/')
+        rgb_path = os.path.join(self.rgb_dir, file_names[-1])
+        # rgb_path = os.path.join(self.rgb_dir, file_names[-1][:-4] + ".jpg")
+        return rgb_path
+
+    def get_raw_data(self, lidar_path):
+        depth_path = self.get_depth_path(lidar_path)
+        rgb_path = self.get_rgb_path(lidar_path)
+        assert(rgb_path != '')
+
+        depth = self.read_depth(depth_path)
+        lidar = self.read_depth(lidar_path)
+        rgb = self.read_rgb(rgb_path)
+
+        return rgb, lidar, depth
+
+    def crop_data(self, data):
+        w = data.shape[1]
+        lp = (w - self.crop_w) // 2
+        return data[-self.crop_h:, lp:lp + self.crop_w, :]
+
+    def deal_data(self, rgb, lidar, depth):
+        depth = np.expand_dims(depth, axis=2)
+        lidar = np.expand_dims(lidar, axis=2)
+
+        gray = np.array(Image.fromarray(rgb).convert('L'))
+        gray = np.expand_dims(gray, -1)
+
+        if self.transform:
+            rgb, lidar, depth = self.transform(rgb, lidar, depth)
+
+        # crop to size(input_h, input_w) at the bottom and right of the image
+        if self.crop:
+            rgb = self.crop_data(rgb)
+            lidar = self.crop_data(lidar)
+            depth = self.crop_data(depth)
+            gray = self.crop_data(gray)
+
+        return rgb.astype(np.float32), lidar.astype(np.float32), depth.astype(np.float32), gray.astype(np.float32)
+
+    def get_ori_shape(self, index):
+        lidar_path = self.lidars[index]
+        return self._get_ori_shape(lidar_path)
+
+    def _get_ori_shape(self, lidar_path):
+        import magic
+        import re
+
+        info = magic.from_file(lidar_path)
+        size_info = re.search('(\d+) x (\d+)', info).groups()
+        width = int(size_info[0])
+        height = int(size_info[1])
+        return height, width
+
+    def getitem(self, index):
+        lidar_path = self.lidars[index]
+        rgb, lidar, depth = self.get_raw_data(lidar_path)
+
+        # verify shape size
+        ori_shape = lidar.shape
+        assert ori_shape == depth.shape == rgb.shape[0:2] == self.get_ori_shape(index)
+
+        rgb, lidar, depth, gray = self.deal_data(rgb, lidar, depth)
+
+        index_3d = np.zeros((1, 1, 1))
+        index_3d[0, 0, 0] = index
+
+        candidates = {"rgb":rgb, "d":lidar, "gt":depth, "g":gray, "index": index_3d, "r_mat":None, "t_vec":None, "rgb_near":None}
+        items = {key:to_float_tensor(val) for key, val in candidates.items() if val is not None}
+
+        return items
+
+    def read_rgb(self, path):
+        img = np.array(Image.open(path).convert('RGB'), dtype=np.uint8)
+        return img
+
+    def read_depth(self, path):
+        depth_png = np.array(Image.open(path), dtype=np.uint16)
+        # make sure we have a proper 16bit depth map here.. not 8bit!
+        assert (np.max(depth_png) > 255)
+        depth_image = (depth_png / 256.).astype(np.float32)
+        # depth_image = self.mask_depth_image(depth_image, self.depth_start, self.depth_end)
+        return depth_image
+
+
+class NuScenesDataset(OurDataset):
+    def __init__(self, base_dir, mode, setname, args):
+        super().__init__(base_dir=base_dir, mode=mode, setname=setname, args=args)
+
+    def get_paths(self, base_dir):
+        lidar_dir = os.path.join(base_dir, 'lidar')
+        depth_dir = os.path.join(base_dir, 'lidar_agg')
+        rgb_dir = os.path.join(base_dir, 'image')
+
+        return lidar_dir, depth_dir, rgb_dir
 

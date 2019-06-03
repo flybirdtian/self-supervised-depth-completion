@@ -15,6 +15,8 @@ from metrics import AverageMeter, Result
 import criteria
 import helper
 from inverse_warp import Intrinsics, homography_from
+from dataloaders.kitti_loader import KittiDataset, OurDataset, NuScenesDataset, VKittiDataset
+# from dataloaders.vkitti_loader import vKittiDataset
 
 parser = argparse.ArgumentParser(description='Sparse-to-Dense')
 parser.add_argument('-w', '--workers', default=4, type=int, metavar='N',
@@ -54,6 +56,11 @@ parser.add_argument('-m', '--train-mode', type=str, default="dense",
                     help = 'dense | sparse | photo | sparse+photo | dense+photo')
 parser.add_argument('-e', '--evaluate', default='', type=str, metavar='PATH')
 
+
+parser.add_argument('--dataset', action='store', dest='dataset', default='kitti',
+                    type=str, nargs='?', help='dataset used')
+
+
 args = parser.parse_args()
 args.use_pose = ("photo" in args.train_mode)
 # args.pretrained = not args.no_pretrained
@@ -65,6 +72,9 @@ if args.use_pose:
     args.w1, args.w2 = 0.1, 0.1
 else:
     args.w1, args.w2 = 0, 0
+
+dataset_name = args.dataset
+
 print(args)
 
 # define loss functions
@@ -75,12 +85,12 @@ smoothness_criterion = criteria.SmoothnessLoss()
 if args.use_pose:
     # hard-coded KITTI camera intrinsics
     K = load_calib()
-    fu, fv = float(K[0,0]), float(K[1,1])
-    cu, cv = float(K[0,2]), float(K[1,2])
+    fu, fv = float(K[0, 0]), float(K[1, 1])
+    cu, cv = float(K[0, 2]), float(K[1, 2])
     kitti_intrinsics = Intrinsics(owidth, oheight, fu, fv, cu, cv).cuda()
 
 
-def iterate(mode, args, loader, model, optimizer, logger, epoch):
+def iterate(mode, args, loader, model, optimizer, logger, epoch, dataset):
     block_average_meter = AverageMeter()
     average_meter = AverageMeter()
     meters = [block_average_meter, average_meter]
@@ -99,9 +109,14 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
         start = time.time()
         batch_data = {key:val.cuda() for key,val in batch_data.items() if val is not None}
         gt = batch_data['gt'] if mode != 'test_prediction' and mode != 'test_completion' else None
+
+        indexs = batch_data['index']
+        filenames = [dataset.get_file_name(int(index.item())) for index in indexs]
+
         data_time = time.time() - start
 
         start = time.time()
+        # with torch.no_grad():
         pred = model(batch_data)
         depth_loss, photometric_loss, smooth_loss, mask = 0, 0, 0, None
         if mode == 'train':
@@ -161,7 +176,8 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
             [m.update(result, gpu_time, data_time, mini_batch_size) for m in meters]
             logger.conditional_print(mode, i, epoch, lr, len(loader), block_average_meter, average_meter)
             logger.conditional_save_img_comparison(mode, i, batch_data, pred, epoch)
-            logger.conditional_save_pred(mode, i, pred, epoch)
+            filename = filenames[0]
+            logger.conditional_save_pred(mode, filename, pred, epoch)
 
     avg = logger.conditional_save_info(mode, average_meter, epoch)
     is_best = logger.rank_conditional_save_best(mode, avg, epoch)
@@ -170,6 +186,56 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch):
     logger.conditional_summarize(mode, avg, is_best)
 
     return avg, is_best
+
+
+def get_dataset_dir(dataset_name="kitti"):
+    if dataset_name == "kitti":
+        return "/home/bird/data2/dataset/kitti_depth_completion"
+    elif dataset_name == "nuscenes":
+        return "/home/bird/data2/dataset/nuscenes/projected"
+    elif dataset_name == "ours":
+        return "/home/bird/data2/dataset/our_lidar/20190315/f_c_1216_352"
+    elif dataset_name == "ours_20190318":
+        return "/home/bird/data2/dataset/our_lidar/20190318/f_c_1216_352"
+    elif dataset_name == "vkitti":
+        return "/home/bird/data2/dataset/vkitti"
+
+
+def get_kitti_dataloader(mode, dataset_name, setname, args):
+    """
+    Get kitti dataset and dataloader according mode and setname
+    :param mode: use this dataset for train or eval, possible value: train or eval
+    :param dataset_name: kitti, ours, vkitti, by default, it use kitti
+    :param setname: train, val, selval, test
+    :param args: related arguments
+    :return: dataset, dataloader
+    """
+    dataset_dir = get_dataset_dir(dataset_name)
+
+    if dataset_name == 'ours':
+        dataset = OurDataset(base_dir=dataset_dir, mode=mode, setname="f_c_1216_352", args=args)
+    elif dataset_name == 'ours_20190318':
+        dataset = OurDataset(base_dir=dataset_dir, mode=mode, setname="f_c_1216_352_20190318", args=args)
+    elif dataset_name == 'vkitti':
+        dataset = VKittiDataset(base_dir=dataset_dir, mode=mode, setname=setname, args=args)
+    elif dataset_name == 'nuscenes':
+        dataset = NuScenesDataset(base_dir=dataset_dir, mode=mode, setname="f_c_1216_352",args=args)
+    elif dataset_name == 'kitti':
+        dataset = KittiDataset(base_dir=dataset_dir, mode=mode, setname=setname, args=args)
+    else:
+        dataset = KittiDepth(setname, args)
+
+    if mode == 'train':
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
+                                                 num_workers=args.workers, pin_memory=True, sampler=None)
+    elif mode == 'eval':
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2,
+                                                 pin_memory=True)  # set batch size to be 1 for validation
+    else:
+        raise ValueError("Unrecognized mode " + str(mode))
+
+    return dataset, dataloader
+
 
 def main():
     global args
@@ -211,13 +277,24 @@ def main():
     # Data loading code
     print("=> creating data loaders ...")
     if not is_eval:
-        train_dataset = KittiDepth('train', args)
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.workers, pin_memory=True, sampler=None)
-    val_dataset = KittiDepth('val', args)
-    val_loader = torch.utils.data.DataLoader(val_dataset,
-        batch_size=1, shuffle=False, num_workers=2, pin_memory=True) # set batch size to be 1 for validation
+        train_dataset, train_loader = get_kitti_dataloader(mode='train', dataset_name=dataset_name, setname='train', args=args)
+        # train_dataset = KittiDepth('train', args)
+        # train_loader = torch.utils.data.DataLoader(
+        #     train_dataset, batch_size=args.batch_size, shuffle=True,
+        #     num_workers=args.workers, pin_memory=True, sampler=None)
+
+    val_dataset, val_loader = get_kitti_dataloader(mode='eval', dataset_name=dataset_name, setname='test', args=args)
+
+    # change dataset here:
+    # val_dataset = KittiDepth('val', args)
+    # val_dataset = KittiDataset(base_dir="./data/kitti/", setname="selval")
+    # val_dataset = vKittiDataset(base_dir="./data/vkitti/", setname="test")
+    # val_dataset = OurDataset(base_dir="/home/bird/data2/dataset/our_lidar/20190315/f_c_1216_352", setname="f_c_1216_352")
+    # val_dataset = OurDataset(base_dir="/home/bird/data2/dataset/our_lidar/20190318/f_c_1216_352", setname="f_c_1216_352_20190318")
+    # val_dataset = NuScenesDataset(base_dir="/home/bird/data2/dataset/nuscenes/projected", setname="f_c_1216_352")
+    # val_loader = torch.utils.data.DataLoader(val_dataset,
+    #     batch_size=1, shuffle=False, num_workers=2, pin_memory=True)  # set batch size to be 1 for validation
+
     print("=> data loaders created.")
 
     # create backups and results folder
@@ -227,14 +304,18 @@ def main():
     print("=> logger created.")
 
     if is_eval:
-        result, is_best = iterate("val", args, val_loader, model, None, logger, checkpoint['epoch'])
+        for i in range(5):
+            result, is_best = iterate("eval", args, val_loader, model, None, logger, checkpoint['epoch'], val_dataset)
+            print(result)
+            print(is_best)
         return
+
 
     # main loop
     for epoch in range(args.start_epoch, args.epochs):
         print("=> starting training epoch {} ..".format(epoch))
-        iterate("train", args, train_loader, model, optimizer, logger, epoch) # train for one epoch
-        result, is_best = iterate("val", args, val_loader, model, None, logger, epoch) # evaluate on validation set
+        iterate("train", args, train_loader, model, optimizer, logger, epoch, train_dataset)  # train for one epoch
+        result, is_best = iterate("val", args, val_loader, model, None, logger, epoch, val_dataset)  # evaluate on validation set
         helper.save_checkpoint({ # save checkpoint
             'epoch': epoch,
             'model': model.module.state_dict(),
@@ -242,6 +323,7 @@ def main():
             'optimizer' : optimizer.state_dict(),
             'args' : args,
         }, is_best, epoch, logger.output_directory)
+
 
 if __name__ == '__main__':
     main()
