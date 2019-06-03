@@ -621,7 +621,6 @@ class VKittiDataset(data.Dataset):
         gray = np.array(Image.fromarray(rgb).convert('L'))
         gray = np.expand_dims(gray, -1)
 
-        # padding to size(input_h, input_w) at the bottom and right of the image
         if self.crop:
             lidar = self.set_top_zero(lidar)
             depth = self.set_top_zero(depth)

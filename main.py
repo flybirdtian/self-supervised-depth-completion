@@ -304,8 +304,8 @@ def main():
 
     # create backups and results folder
     logger = helper.logger(args)
-    if checkpoint is not None:
-        logger.best_result = checkpoint['best_result']
+    # if checkpoint is not None:
+    #     logger.best_result = checkpoint['best_result']
     print("=> logger created.")
 
     if is_eval:
