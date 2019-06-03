@@ -110,14 +110,19 @@ def iterate(mode, args, loader, model, optimizer, logger, epoch, dataset):
         batch_data = {key:val.cuda() for key,val in batch_data.items() if val is not None}
         gt = batch_data['gt'] if mode != 'test_prediction' and mode != 'test_completion' else None
 
-        indexs = batch_data['index']
-        filenames = [dataset.get_file_name(int(index.item())) for index in indexs]
+        indexes = batch_data['index']
+        filenames = [dataset.get_file_name(int(index.item())) for index in indexes]
 
         data_time = time.time() - start
 
         start = time.time()
-        # with torch.no_grad():
-        pred = model(batch_data)
+
+        if mode == 'train':
+            pred = model(batch_data)
+        else:
+            with torch.no_grad():
+                pred = model(batch_data)
+
         depth_loss, photometric_loss, smooth_loss, mask = 0, 0, 0, None
         if mode == 'train':
             # Loss 1: the direct depth supervision from ground truth label
@@ -304,10 +309,9 @@ def main():
     print("=> logger created.")
 
     if is_eval:
-        for i in range(5):
-            result, is_best = iterate("eval", args, val_loader, model, None, logger, checkpoint['epoch'], val_dataset)
-            print(result)
-            print(is_best)
+        result, is_best = iterate("eval", args, val_loader, model, None, logger, checkpoint['epoch'], val_dataset)
+        print(result)
+        print(is_best)
         return
 
 
